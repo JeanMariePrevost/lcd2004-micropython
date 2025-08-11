@@ -78,7 +78,7 @@ class LCD2004:
             lcd = LCD2004(sda=2, scl=3, freq=100_000, auto_flush=False)
         """
         self.i2c = I2C(i2c_id, sda=Pin(sda), scl=Pin(scl), freq=freq)
-        self.address = addr if addr is not None else self._detect_address()
+        self.address = addr if addr is not None else self._detect_pcf8574_addr()
         self.auto_flush = bool(auto_flush)
 
         # Display state latches
@@ -89,6 +89,9 @@ class LCD2004:
         # Backlight latch and write buffer
         self._backlight_state = self._MASK_BL if backlight else 0x00
         self._write_buffer = bytearray()
+
+        # Verify connection before initializing display ("no-op" command)
+        self._verify_connection()
 
         # --- HD44780 Power-On Initialization Sequence (4-bit mode) ---
         # 1. Wait >40ms after VCC reaches 4.5V for stable operation
@@ -120,7 +123,9 @@ class LCD2004:
         """
         Clear the display and return cursor to top-left position (0,0).
 
-        Takes about 2ms to complete.
+        Note:
+            Flushes regardless of auto_flush setting.
+            Takes about 2ms to complete (blocking).
         """
         self._command(self._CMD_CLEAR)
 
@@ -128,7 +133,9 @@ class LCD2004:
         """
         Return cursor to the top-left position (0,0) without clearing the display.
 
-        Takes about 2ms to complete.
+        Note:
+            Flushes regardless of auto_flush setting.
+            Takes about 2ms to complete (blocking).
         """
         self._command(self._CMD_HOME)
 
@@ -295,7 +302,7 @@ class LCD2004:
 
     # ---------------- Internals ----------------
 
-    def _detect_address(self) -> int:
+    def _detect_pcf8574_addr(self) -> int:
         """
         Automatically find the I2C address of the PCF8574 backpack.
 
@@ -305,12 +312,27 @@ class LCD2004:
         scan = self.i2c.scan()
         if not scan:
             raise OSError("No I2C devices found for LCD2004.")
+
         # Prefer common addresses if present
         if 0x27 in scan:
             return 0x27
         if 0x3F in scan:
             return 0x3F
+
+        # Return the first address found otherwise
         return scan[0]
+
+    def _verify_connection(self) -> None:
+        """
+        Verify that the LCD I2C address responds to a basic write.
+
+        Sends a single safe byte (E=0, RS=0, backlight state) that does nothing
+        to the display except possibly update the backlight.
+        """
+        try:
+            self.i2c.writeto(self.address, bytes([self._backlight_state & self._MASK_BL]))  # safe "no-op"
+        except OSError as e:
+            raise OSError(f"LCD2004: I2C connection failed to verify at 0x{self.address:02X}.\n" f"Check wiring, pins, I2C frequency, and address.") from e
 
     def _apply_backlight_only(self) -> None:
         """
