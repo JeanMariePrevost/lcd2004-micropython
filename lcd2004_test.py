@@ -1,96 +1,86 @@
-# Save your class in lcd2004.py (from the previous message), then run this.
-# Adjust I2C pins to your board. For Raspberry Pi Pico: I2C0 on GP0/GP1 is common.
+"""
+LCD2004 Demo Script
+Demonstrates core features of the LCD2004 driver over ~10 seconds.
+"""
 
 import time
-from machine import I2C, Pin
-from lcd2004 import LCD2004
 
-def demo():
-    # --- I2C setup (change pins as needed) ---
-    i2c = I2C(0, sda=Pin(0), scl=Pin(1), freq=400_000)
+from lcd2004 import LCD2004  # adjust import path as needed
 
-    # --- LCD init ---
-    lcd = LCD2004(i2c, cols=20, rows=4, backlight=True, auto_flush=True)
+# --- Init display ---
+lcd = LCD2004(sda=0, scl=1)  # change pins for your board
 
-    # 1) Basic hello world + titles
-    lcd.clear()
-    lcd.write_at(0, 0, "LCD2004 sanity demo", truncate=True, fill_to_eol=True)
-    lcd.write_at(1, 0, "Hello, world!", fill_to_eol=True)
-    time.sleep(1.0)
+print("Clearing display...")
+lcd.clear()
+time.sleep(0.5)
 
-    # 2) Cursor + blink states
-    lcd.display(on=True, cursor=True, blink=False)
-    lcd.write_at(2, 0, "Cursor ON, blink OFF", truncate=True)
-    time.sleep(1.0)
-    lcd.display(on=True, cursor=True, blink=True)
-    lcd.write_at(3, 0, "Cursor+Blink ON     ", truncate=True)
-    time.sleep(1.0)
-    lcd.display(on=True, cursor=False, blink=False)
+print("Backlight ON...")
+lcd.set_backlight(True)
+time.sleep(0.5)
 
-    # 3) set_cursor + write
-    lcd.set_cursor(0, 1)  # col 0, row 1
-    lcd.write("Hello again -> ")
-    time.sleep(0.6)
+print("Writing first line...")
+lcd.set_cursor(0, 0)
+lcd.write("Hello, World!")
+time.sleep(0.5)
 
-    # 4) create a custom char (index 0) and print it
-    # Simple 5x8 smiley (only low 5 bits used per row)
-    SMILE = [
-        0b00000,
-        0b01010,
-        0b01010,
-        0b00000,
-        0b00000,
-        0b10001,
-        0b01110,
-        0b00000,
-    ]
-    lcd.create_char(0, SMILE)
-    lcd.write(chr(0))
-    time.sleep(0.8)
+print("Writing second line...")
+lcd.set_cursor(0, 1)
+lcd.write("LCD2004 Demo")
+time.sleep(0.5)
 
-    # 5) clear_line + write_at with fill to EOL
-    lcd.clear_line(2)
-    lcd.write_at(2, 0, "Line 2 cleared      ", truncate=True, fill_to_eol=True)
-    time.sleep(0.6)
+print("Turning cursor ON...")
+lcd.set_cursor_visible(True)
+time.sleep(0.5)
 
-    # 6) Truncation demo (intentionally too long)
-    long_text = "This line will be truncated at column 5"
-    lcd.write_at(2, 5, long_text, truncate=True)
-    time.sleep(0.8)
+print("Turning blink ON...")
+lcd.set_blink(True)
+time.sleep(1)
 
-    # 7) Scroll demo
-    lcd.write_at(3, 0, "Scrolling left -->  ", fill_to_eol=True)
-    for _ in range(6):
-        lcd.scroll_left()
-        time.sleep(0.25)
-    for _ in range(6):
-        lcd.scroll_right()
-        time.sleep(0.25)
+print("Turning blink OFF, cursor OFF...")
+lcd.set_blink(False)
+lcd.set_cursor_visible(False)
+time.sleep(0.5)
 
-    # 8) Home + small overwrite
-    lcd.home()
-    lcd.write("Home() OK")
-    time.sleep(0.8)
+print("Scrolling left...")
+for _ in range(5):
+    lcd.scroll_left()
+    time.sleep(0.2)
 
-    # 9) Display off/on
-    lcd.display(on=False)
-    time.sleep(0.5)
-    lcd.display(on=True)
-    time.sleep(0.5)
+print("Scrolling right...")
+for _ in range(5):
+    lcd.scroll_right()
+    time.sleep(0.2)
 
-    # 10) Backlight toggle
-    lcd.backlight(False)
-    time.sleep(0.5)
-    lcd.backlight(True)
-    time.sleep(0.5)
+print("Clearing display for custom char test...")
+lcd.clear()
 
-    # Final screen
-    lcd.clear()
-    lcd.write_at(0, 0, "Demo complete.", fill_to_eol=True)
-    lcd.write_at(1, 0, "Custom char: ", fill_to_eol=False)
-    lcd.write(chr(0))
-    lcd.write_at(2, 0, "Cursor/scroll OK.", fill_to_eol=True)
-    lcd.write_at(3, 0, "Backlight OK.", fill_to_eol=True)
+print("Creating custom degree symbol in slot 0...")
+DEG_SYMBOL = [0b00110, 0b01001, 0b00110, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000]  # ··██·  # ·█··█  # ··██·  # ·····  # ·····  # ·····  # ·····  # ·····
+lcd.create_char(0, DEG_SYMBOL)
 
-if __name__ == "__main__":
-    demo()
+print("Displaying temperature with custom symbol...")
+lcd.set_cursor(0, 0)
+lcd.write("Temp: 23")
+lcd.write(chr(0))  # degree symbol
+lcd.write("C")
+time.sleep(2)
+
+print("Backlight OFF...")
+lcd.set_backlight(False)
+time.sleep(0.5)
+
+print("Backlight ON...")
+lcd.set_backlight(True)
+time.sleep(0.5)
+
+print("Display OFF (content preserved)...")
+lcd.set_display(False)
+time.sleep(1)
+
+print("Display ON...")
+lcd.set_display(True)
+time.sleep(1)
+
+print("Demo complete.")
+lcd.clear()
+lcd.write("Demo complete.")
