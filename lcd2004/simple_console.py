@@ -67,12 +67,13 @@ class SimpleConsole:
 
     def _wrap_line(self, line: str) -> list[str]:
         """Wrap a single string into chunks <= self.cols."""
-        line = str(line)
-
+        s = str(line)
         out = []
-        while line:
-            out.append(line[: self.cols])
-            line = line[self.cols :]
+        while s:
+            out.append(s[: self.cols])
+            s = s[self.cols :]
+        if self.recent_first:
+            out.reverse()  # If recent_first is True, reverse the list so newest is first in the wrapped lines also
         return out or [""]
 
     def _render(self) -> None:
