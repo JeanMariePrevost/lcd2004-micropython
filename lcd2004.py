@@ -290,15 +290,19 @@ class LCD2004:
         except TypeError as e:
             raise TypeError("bitmap must be an iterable of 8 integers") from e
 
-        if len(rows) != 8:
-            raise ValueError(f"bitmap must have length 8, got {len(rows)}")
+        if len(rows) < 8:
+            rows.extend([0] * (8 - len(rows)))  # Pad with zeros if too short
+        elif len(rows) > 8:
+            rows = rows[:8]  # Truncate if too long
 
-        # value/type checks
+        # Row values/type checks (enforce 5 bits integers)
         for i, v in enumerate(rows):
             if not isinstance(v, int):
                 raise TypeError(f"bitmap[{i}] must be int, got {type(v).__name__}")
-            if v < 0 or v > 0x1F:
-                raise ValueError(f"bitmap[{i}] must be in 0..31 (5 bits) (got {v})")
+            if v < 0:
+                raise ValueError(f"bitmap[{i}] must be non-negative (got {v})")
+            # Trim to 5 bits (0..31)
+            rows[i] = v & 0x1F
 
         # write to CGRAM
         idx = index & 0x07
