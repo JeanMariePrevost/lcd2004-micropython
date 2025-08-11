@@ -278,11 +278,33 @@ class LCD2004:
             lcd.create_char(0, BATTERY_FULL)
             lcd.write(chr(0))  # Display the custom character
         """
+        # Verify index type and bounds
+        if not isinstance(index, int):
+            raise TypeError("index must be int")
+        if index < 0 or index > 7:
+            raise ValueError("index must be a slot in range 0..7")
+
+        # Convert bitmap to list and validate format (8 rows of 5-bit values)
+        try:
+            rows = list(bitmap)
+        except TypeError as e:
+            raise TypeError("bitmap must be an iterable of 8 integers") from e
+
+        if len(rows) != 8:
+            raise ValueError(f"bitmap must have length 8, got {len(rows)}")
+
+        # value/type checks
+        for i, v in enumerate(rows):
+            if not isinstance(v, int):
+                raise TypeError(f"bitmap[{i}] must be int, got {type(v).__name__}")
+            if v < 0 or v > 0x1F:
+                raise ValueError(f"bitmap[{i}] must be in 0..31 (5 bits) (got {v})")
+
+        # write to CGRAM
         idx = index & 0x07
         self._command(self._CMD_SET_CGRAM | (idx << 3))
-        for i in range(8):
-            row = bitmap[i] if i < len(bitmap) else 0
-            self._data(row & 0x1F)
+        for v in rows:
+            self._data(v)
         if self.auto_flush:
             self.flush()
 
