@@ -1,136 +1,219 @@
-# MicroPython driver for HD44780-compatible 20x4 LCDs over I2C (PCF8574 backpack)
-# Class name: LCD2004
-#
-# Notes
-# - Works with common backpacks where:
-#     P7..P4 -> D7..D4, P3 -> Backlight, P2 -> E, P1 -> RW (unused, tied low), P0 -> RS
-# - Defaults to 20x4 addressing. Also works for 16x2/16x4 if cols/rows are set accordingly.
-# - Efficient batched I2C writes; flush() is called automatically unless auto_flush=False.
-# - Safer backlight() implementation that never clocks E (doesn’t send spurious commands).
+"""
+MicroPython driver for LCD2004 / HD44780-compatible character LCDs over I²C using a PCF8574 backpack.
+
+- Backlight is binary (on/off), controlled in software. Ensure the backpack’s jumper is set correctly.
+- RW is tied to GND (write-only): the busy flag cannot be read; fixed delays are used where required.
+- Contrast is set by the small potentiometer on the backpack.
+"""
 
 import time
 
+from machine import I2C, Pin
+
+
 class LCD2004:
-    """HD44780 LCD via PCF8574 I2C expander (4-bit mode)."""
+    """
+    Driver for HD44780 LCD displays with PCF8574 I2C backpack.
 
-    # Command constants
-    _CMD_CLEAR            = 0x01
-    _CMD_HOME             = 0x02
-    _CMD_ENTRY_MODE_SET   = 0x04
-    _CMD_DISPLAY_CTRL     = 0x08
-    _CMD_SHIFT            = 0x10
-    _CMD_FUNCTION_SET     = 0x20
-    _CMD_SET_CGRAM_ADDR   = 0x40
-    _CMD_SET_DDRAM_ADDR   = 0x80
+    The display has 80 character positions (20 columns × 4 rows) numbered from (0,0) at the
+    top-left to (19,3) at the bottom-right.
+    """
 
-    # Entry mode flags
-    _ENTRY_INC            = 0x02
-    _ENTRY_SHIFT          = 0x01
+    # --- HD44780 commands ---
+    # These are the standard commands that control the LCD's behavior
+    _CMD_CLEAR = 0x01  # Clear display and return cursor to home and resets display shift
+    _CMD_HOME = 0x02  # Return cursor to home position (0,0) and resets display shift (no clear)
+    _CMD_ENTRY_MODE = 0x04  # Set how cursor moves after writing
+    _CMD_DISPLAY_CTRL = 0x08  # Control display, cursor, and blink
+    _CMD_SHIFT = 0x10  # Shift display or cursor left/right
+    _CMD_FUNCTION_SET = 0x20  # Set data width, lines, and font
+    _CMD_SET_CGRAM = 0x40  # Set custom character memory address
+    _CMD_SET_DDRAM = 0x80  # Set display memory address (cursor position)
 
-    # Display control flags
-    _DISP_ON              = 0x04
-    _CURSOR_ON            = 0x02
-    _BLINK_ON             = 0x01
+    # Entry mode flags (cursor behavior after writing)
+    _ENTRY_INC = 0x02  # Cursor moves right after writing (left-to-right)
+    _ENTRY_SHIFT = 0x01  # Display shifts with cursor (not used here)
+
+    # Display control flags (on/off toggles)
+    _DISP_ON = 0x04  # Display content visible
+    _CURSOR_ON = 0x02  # Cursor underline visible
+    _BLINK_ON = 0x01  # Cursor position blinks
 
     # Function set flags
-    _FUNC_8BIT            = 0x10
-    _FUNC_2LINE           = 0x08
-    _FUNC_5x10            = 0x04  # (rarely used; most 20x4 use 5x8)
+    _FUNC_8BIT = 0x10  # 8-bit data mode (not used - we use 4-bit)
+    _FUNC_2LINE = 0x08  # 2-line display mode
+    _FUNC_5x10 = 0x04  # 5x10 font (not used on 20x4, they use 5x8 characters)
 
-    # PCF8574 bit masks (typical wiring)
-    _MASK_RS              = 0x01
-    _MASK_RW              = 0x02  # unused; we always write
-    _MASK_E               = 0x04
-    _MASK_BL              = 0x08
+    # PCF8574 bit masks (Control the I2C backpack pins)
+    _MASK_RS = 0x01  # Register Select (0=command, 1=data)
+    _MASK_RW = 0x02  # Read/Write (unused - always write mode)
+    _MASK_E = 0x04  # Enable (strobe for data transfer)
+    _MASK_BL = 0x08  # Backlight control
 
-    def __init__(self, i2c, addr=None, cols=20, rows=4, backlight=True, auto_flush=True):
+    # Fixed geometry/mapping for standard 20×4 modules
+    COLS = 20  # Characters per row
+    ROWS = 4  # Number of rows
+    _ROW_OFFSETS = (0x00, 0x40, 0x14, 0x54)  # Starting memory addresses for each row
+
+    def __init__(self, *, sda: int, scl: int, i2c_id: int = 0, freq: int = 400_000, addr: "int | None" = None, backlight: bool = True, auto_flush: bool = True) -> None:
         """
-        i2c: machine.I2C or SoftI2C instance
-        addr: I2C address; if None, first scanned address is used
-        cols, rows: LCD geometry
-        backlight: initial backlight state
-        auto_flush: True -> flush after each high-level operation
+        Initialize the LCD display connection.
+
+        Args:
+            sda: GPIO pin number for I2C data line (SDA)
+            scl: GPIO pin number for I2C clock line (SCL)
+            i2c_id: I2C controller number (default 0, sometimes 1)
+            freq: I2C bus frequency. 400kHz is standard, 100kHz if connection flaky
+            addr: I2C address of the PCF8574 backpack. Common values are 0x27 or 0x3F.
+                  By default (addr=None), automatically scans and picks the first device found.
+            backlight: Default backlight on/off state (default True)
+            auto_flush: If True, automatically sends buffered data after each write operation.
+                       Set to False if you want to batch multiple operations and flush manually. (default True)
+
+        Example:
+            # Basic setup on Raspberry Pi Pico (I2C0, pins 0 and 1)
+            lcd = LCD2004(sda=0, scl=1)
+
+            # Custom setup with manual control
+            lcd = LCD2004(sda=2, scl=3, freq=100_000, auto_flush=False)
         """
-        self.i2c = i2c
-        self.addr = addr if addr is not None else self._detect_address(i2c)
-        self.cols = int(cols)
-        self.rows = int(rows)
+        self.i2c = I2C(i2c_id, sda=Pin(sda), scl=Pin(scl), freq=freq)
+        self.address = addr if addr is not None else self._detect_address()
         self.auto_flush = bool(auto_flush)
 
-        # Row DDRAM offsets (controller is internally 2x40; 4-line modules interleave)
-        if self.rows >= 4:
-            if self.cols >= 20:
-                self._row_ofs = (0x00, 0x40, 0x14, 0x54)  # common 20x4 map
-            else:
-                self._row_ofs = (0x00, 0x40, 0x10, 0x50)  # common 16x4 map
-        else:
-            self._row_ofs = (0x00, 0x40, 0x00, 0x40)     # 1/2 line modules
+        # Display state latches
+        self._display_on = 1  # Display content is visible
+        self._cursor_on = 0  # Cursor underline is hidden
+        self._blink_on = 0  # Cursor position doesn't blink
 
-        self._bl = self._MASK_BL if backlight else 0x00
-        self._buf = bytearray()
+        # Backlight latch and write buffer
+        self._backlight_state = self._MASK_BL if backlight else 0x00
+        self._write_buffer = bytearray()
 
-        # Initialize LCD in 4-bit mode (per datasheet power-up sequence)
-        time.sleep_ms(50)                         # wait > 40ms after VCC rises
-        self._write4(0x30, rs=0) ; time.sleep_ms(5)
-        self._write4(0x30, rs=0) ; time.sleep_us(150)
-        self._write4(0x30, rs=0) ; time.sleep_us(150)
-        self._write4(0x20, rs=0)                  # 4-bit mode
+        # --- HD44780 Power-On Initialization Sequence (4-bit mode) ---
+        # 1. Wait >40ms after VCC reaches 4.5V for stable operation
+        time.sleep_ms(60)  # (requires >40ms)
+
+        # 2. Wake up sequence: Three attempts at 8-bit mode (0x30) to wake up controller
+        self._write_nibble(0x30, rs=0)  # First 8-bit mode attempt
+        time.sleep_ms(6)  # Wait >4.1ms
+        self._write_nibble(0x30, rs=0)  # Second 8-bit mode attempt
+        time.sleep_us(150)  # Wait >100μs
+        self._write_nibble(0x30, rs=0)  # Third 8-bit mode attempt
+        time.sleep_us(150)  # Wait >100μs
+
+        # 3. Final switch to 4-bit mode (0x20)
+        self._write_nibble(0x20, rs=0)  # Sets interface to 4-bit mode
         self.flush()
 
-        # Function set: 4-bit, 2 line, 5x8 dots
-        self._command(self._CMD_FUNCTION_SET | self._FUNC_2LINE)
-        # Display off
-        self._command(self._CMD_DISPLAY_CTRL)
-        # Clear display (slow)
-        self.clear()
-        # Entry mode: increment, no shift
-        self._command(self._CMD_ENTRY_MODE_SET | self._ENTRY_INC)
-        # Display on, no cursor, no blink
-        self.display(on=True, cursor=False, blink=False)
+        # Configure the display for normal operation
+        self._command(self._CMD_FUNCTION_SET | self._FUNC_2LINE)  # 4-bit, 2 lines, 5×8 font
+        self._command(self._CMD_DISPLAY_CTRL)  # Turn display off temporarily
+        self.clear()  # Clear any startup garbage
+        self._command(self._CMD_ENTRY_MODE | self._ENTRY_INC)  # Cursor moves right after writing
+        self._apply_display_state()  # Turn display on (no cursor/blink)
+        self._apply_backlight_only()  # Set initial backlight state
 
-        # Ensure backlight state is applied without strobing E
-        self._apply_backlight_only()
+    # ---------------- Public API ----------------
 
-    # ---------- Public API ----------
+    def clear(self) -> None:
+        """
+        Clear the display and return cursor to top-left position (0,0).
 
-    def clear(self):
+        Takes about 2ms to complete.
+        """
         self._command(self._CMD_CLEAR)
-        self.flush()
-        time.sleep_ms(2)  # datasheet: clear/home need >1.52ms
 
-    def home(self):
+    def home(self) -> None:
+        """
+        Return cursor to the top-left position (0,0) without clearing the display.
+
+        Takes about 2ms to complete.
+        """
         self._command(self._CMD_HOME)
-        self.flush()
-        time.sleep_ms(2)
 
-    def backlight(self, on: bool):
-        """Turn backlight LED on/off without clocking E."""
-        self._bl = self._MASK_BL if on else 0x00
+    def set_backlight(self, on: bool) -> None:
+        """
+        Turn the backlight LED on or off.
+
+        Not to be confused with set_display(), which controls whether the LCD controller shows its output.
+        """
+        self._backlight_state = self._MASK_BL if on else 0x00
         self._apply_backlight_only()
 
-    def display(self, on=True, cursor=False, blink=False):
-        """Set display on/off, cursor visibility, and blink."""
-        ctrl = (self._CMD_DISPLAY_CTRL |
-                (self._DISP_ON if on else 0) |
-                (self._CURSOR_ON if cursor else 0) |
-                (self._BLINK_ON if blink else 0))
-        self._command(ctrl)
+    def set_display(self, on: bool) -> None:
+        """
+        Show or hide the LCD display content.
+
+        When turned off, the display goes blank but the memory is preserved.
+        When turned back on, content is restored.
+        Can be used to create "blinking" effects or to save power.
+        """
+        self._display_on = 1 if on else 0
+        self._apply_display_state()
+
+    def set_cursor_visible(self, on: bool) -> None:
+        """
+        Show or hide the cursor underline.
+        """
+        self._cursor_on = 1 if on else 0
+        self._apply_display_state()
+
+    def set_blink(self, on: bool) -> None:
+        """
+        Turn on/off the blinking block at the cursor position.
+
+        Note:
+        - Independent of the underline cursor: you can enable blink, the cursor, both, or neither.
+        - Blink overlays one character cell; display contents are unchanged.
+        """
+        self._blink_on = 1 if on else 0
+        self._apply_display_state()
+
+    def set_cursor(self, col: int, row: int) -> None:
+        """
+        Move the cursor to a specific position on the display.
+
+        Args:
+            col: Column position (0-19, left to right)
+            row: Row position (0-3, top to bottom)
+
+        Example:
+            lcd.set_cursor(0, 0)    # Top-left
+            lcd.set_cursor(19, 3)   # Bottom-right
+            lcd.set_cursor(10, 2)   # Middle of third row
+        """
+        # Clamp coordinates to valid display bounds (0-19 columns, 0-3 rows)
+        if row < 0:
+            row = 0
+        if row > 3:
+            row = 3
+        if col < 0:
+            col = 0
+        if col > 19:
+            col = 19
+
+        # Calculate the memory address for this position and move cursor
+        addr = self._ROW_OFFSETS[row] + col
+        self._command(self._CMD_SET_DDRAM | addr)
         if self.auto_flush:
             self.flush()
 
-    def set_cursor(self, col: int, row: int):
-        """Set cursor to (col,row) with bounds clamped."""
-        if row < 0: row = 0
-        if row >= self.rows: row = self.rows - 1
-        if col < 0: col = 0
-        if col >= self.cols: col = self.cols - 1
-        addr = self._row_ofs[row] + col
-        self._command(self._CMD_SET_DDRAM_ADDR | addr)
-        if self.auto_flush:
-            self.flush()
+    def write(self, s: "str | bytes | bytearray") -> None:
+        """
+        Write characters at the current cursor position.
 
-    def write(self, s):
-        """Write text at current cursor. Accepts str, bytes, or bytearray."""
+        Args:
+            s: str, bytes, or bytearray. For strings, characters are encoded as ASCII (0-127).
+
+        Note:
+            Custom characters (slots 0–7) can be written using chr(slot).
+
+        Example:
+            lcd.write("Hello")               # String
+            lcd.write(b"ABC")                 # Bytes
+            lcd.write(bytearray([65, 66]))    # Bytearray ("AB")
+        """
         if isinstance(s, str):
             for ch in s:
                 self._data(ord(ch) & 0xFF)
@@ -140,101 +223,159 @@ class LCD2004:
         if self.auto_flush:
             self.flush()
 
-    def write_at(self, row: int, col: int, s, *, truncate=True, fill_to_eol=False):
-        """Convenience: set cursor then write; optional truncate/fill to EOL."""
-        self.set_cursor(col, row)
-        if isinstance(s, (bytes, bytearray)):
-            text = bytes(s)
-        else:
-            text = str(s)
-        if truncate and len(text) > (self.cols - col):
-            text = text[: self.cols - col]
-        self.write(text)
-        if fill_to_eol:
-            remaining = self.cols - (col + len(text))
-            if remaining > 0:
-                self.write(" " * remaining)
-        if self.auto_flush:
-            self.flush()
-
-    def clear_line(self, row: int):
-        """Clear a whole line."""
-        self.write_at(row, 0, " " * self.cols, truncate=False, fill_to_eol=False)
-
-    def scroll_left(self):
-        self._command(self._CMD_SHIFT | 0x08)  # display shift, left
-        if self.auto_flush:
-            self.flush()
-
-    def scroll_right(self):
-        self._command(self._CMD_SHIFT | 0x0C)  # display shift, right
-        if self.auto_flush:
-            self.flush()
-
-    def create_char(self, index: int, bitmap):
+    def scroll_left(self) -> None:
         """
-        Define a custom 5x8 char.
-        index: 0..7
-        bitmap: iterable of 8 bytes (only low 5 bits used per row)
+        Display shift left by one column (hardware).
+
+        - Shifts the visible window left; DDRAM contents are unchanged.
+        - Newly revealed rightmost column shows whatever is in DDRAM there (often spaces).
+        - Affects the whole display, not a single line.
+        - Cursor/DDRAM address counter is not changed by this operation.
+        """
+        self._command(self._CMD_SHIFT | 0x08)
+        if self.auto_flush:
+            self.flush()
+
+    def scroll_right(self) -> None:
+        """
+        Display shift right by one column (hardware).
+
+        - Shifts the visible window right; DDRAM contents are unchanged.
+        - Newly revealed leftmost column shows whatever is in DDRAM there.
+        - Affects the whole display, not a single line.
+        - Cursor/DDRAM address counter is not changed by this operation.
+        """
+        self._command(self._CMD_SHIFT | 0x0C)
+        if self.auto_flush:
+            self.flush()
+
+    def create_char(self, index: int, bitmap: "list[int]") -> None:
+        """
+        Define a custom 5×8 character to be used in write()
+
+        Args:
+            index: Character slot number (0–7). Up to 8 custom characters.
+            bitmap: List of 8 integers; only the low 5 bits of each row are used (value 0–31).
+
+        Example - Creating a "battery full" symbol in slot 0:
+            BATTERY_FULL = [
+                0b01110,  # ·███·
+                0b11111,  # █████
+                0b11111,  # █████
+                0b11111,  # █████
+                0b11111,  # █████
+                0b11111,  # █████
+                0b11111,  # █████
+                0b00000   # ·····
+            ]
+            lcd.create_char(0, BATTERY_FULL)
+            lcd.write(chr(0))  # Display the custom character
         """
         idx = index & 0x07
-        self._command(self._CMD_SET_CGRAM_ADDR | (idx << 3))
+        self._command(self._CMD_SET_CGRAM | (idx << 3))
         for i in range(8):
-            self._data((bitmap[i] if i < len(bitmap) else 0) & 0x1F)
+            row = bitmap[i] if i < len(bitmap) else 0
+            self._data(row & 0x1F)
         if self.auto_flush:
             self.flush()
 
-    def flush(self):
-        """Write buffered bytes to the PCF8574."""
-        if self._buf:
-            try:
-                # _buf is already a bytearray, so writeto accepts it directly.
-                self.i2c.writeto(self.addr, self._buf)
-            finally:
-                # Reuse the same object to avoid reallocs
-                self._buf[:] = b""
+    def flush(self) -> None:
+        """
+        Send write buffer to the display and clear the buffer.
+        """
+        buf = self._write_buffer
+        if not buf:
+            return
+        try:
+            # Chunk to reduce risk of NACK/EIO on some ports
+            for i in range(0, len(buf), 8):
+                self.i2c.writeto(self.address, buf[i : i + 8])
+        finally:
+            buf[:] = b""
 
-    # ---------- Internals ----------
+    # ---------------- Internals ----------------
 
-    def _detect_address(self, i2c):
-        scan = i2c.scan()
+    def _detect_address(self) -> int:
+        """
+        Automatically find the I2C address of the PCF8574 backpack.
+
+        Raises:
+            OSError: If no I2C devices are found on the bus.
+        """
+        scan = self.i2c.scan()
         if not scan:
             raise OSError("No I2C devices found for LCD2004.")
-        # Heuristic: prefer common 0x27/0x3F if present
-        if 0x27 in scan: return 0x27
-        if 0x3F in scan: return 0x3F
+        # Prefer common addresses if present
+        if 0x27 in scan:
+            return 0x27
+        if 0x3F in scan:
+            return 0x3F
         return scan[0]
 
-    def _apply_backlight_only(self):
-        """Update backlight LED without toggling E or sending a nibble."""
-        # Send a single byte with E=0,RW=0,RS=0 and BL per state.
-        self.i2c.writeto(self.addr, bytes([self._bl]))
+    def _apply_backlight_only(self) -> None:
+        """
+        Apply the current backlight state to the display.
+        """
+        self.i2c.writeto(self.address, bytes([self._backlight_state]))
 
+    def _apply_display_state(self) -> None:
+        """
+        Apply the current display state (on/off, cursor, blink) to the display.
+        """
+        ctrl = self._CMD_DISPLAY_CTRL | (self._DISP_ON if self._display_on else 0) | (self._CURSOR_ON if self._cursor_on else 0) | (self._BLINK_ON if self._blink_on else 0)
+        self._command(ctrl)
+        if self.auto_flush:
+            self.flush()
 
-    def _write4(self, byte, rs):
-        """Queue one 4-bit transfer (upper nibble of 'byte') with optional RS."""
-        data = (byte & 0xF0) | self._bl | (self._MASK_RS if rs else 0)
-        # E high then E low
-        # Old (CPython-friendly but not MicroPython-safe):
-        # self._buf.extend((data | self._MASK_E, data))
-        # MicroPython-safe:
-        self._buf.append(data | self._MASK_E)
-        self._buf.append(data)
+    def _write_nibble(self, byte: int, rs: bool) -> None:
+        """
+        Queue one 4-bit transfer (upper nibble of 'byte') with optional RS.
 
-    def _send(self, byte, rs):
-        """Queue full 8-bit transfer (two 4-bit cycles)."""
-        hb = byte & 0xF0
-        lb = (byte << 4) & 0xF0
-        self._write4(hb, rs)
-        self._write4(lb, rs)
+        Args:
+            byte: The 8 bits to send
+            rs: Register Select - True for data, False for commands
+        """
+        data = (byte & 0xF0) | self._backlight_state | (self._MASK_RS if rs else 0)
+        self._write_buffer.append(data | self._MASK_E)  # E=1
+        self._write_buffer.append(data)  # E=0
 
+    def _send_byte(self, byte: int, rs: bool) -> None:
+        """
+        Queue full 8-bit transfer (two 4-bit cycles) with optional RS.
 
-    def _command(self, cmd):
-        self._send(cmd & 0xFF, rs=0)
-        # Only clear/home require extra time; others are fine at I2C pace
+        Args:
+            byte: The full 8-bit byte to send
+            rs: Register Select - True for data, False for commands
+
+        This method breaks down an 8-bit transfer into two 4-bit operations.
+        """
+        self._write_nibble(byte & 0xF0, rs)
+        self._write_nibble((byte << 4) & 0xF0, rs)
+
+    def _command(self, cmd: int) -> None:
+        """
+        Send a command byte to the LCD controller (byte with RS=0)
+
+        Args:
+            cmd: The command byte to send
+
+        Commands control the LCD's behavior - clearing the display, moving the cursor, changing display settings, etc.
+        """
+        self._send_byte(cmd & 0xFF, rs=0)
         if cmd in (self._CMD_CLEAR, self._CMD_HOME):
+            # CLEAR and HOME require a blocking delay (~1.52 ms).
+            # We flush pending bytes and wait ~2 ms as a safe margin.
             self.flush()
             time.sleep_ms(2)
 
-    def _data(self, val):
-        self._send(val & 0xFF, rs=1)
+    def _data(self, val: int) -> None:
+        """
+        Queue a data byte to be written to DDRAM (text) or CGRAM (custom characters) with RS=1.
+
+        Args:
+            val: The data byte to send (typically a character code).
+
+        Data writes place a character at the current address counter position
+        and advance the counter according to the entry mode settings.
+        """
+        self._send_byte(val & 0xFF, rs=1)
