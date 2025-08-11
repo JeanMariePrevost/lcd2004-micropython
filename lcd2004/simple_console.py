@@ -1,5 +1,5 @@
 # simple_console.py
-from lcd2004 import LCD2004
+from lcd2004.driver import LCD2004
 
 
 class SimpleConsole:
