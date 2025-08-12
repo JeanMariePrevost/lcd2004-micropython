@@ -2,7 +2,18 @@
 
 LCD2004 is a MicroPython driver for HD44780-compatible 20×4 character LCDs using a PCF8574 I2C backpack, plus a simple scrolling log console wrapper.
 
-It lets you use an LCD2004 as a quick logging console:
+It is for these **20×4 LCD module** with a **PCF8574 I²C backpack** on the back easily found online (e.g. on AliExpress) 
+
+They look like this:
+
+[<img src="images/lcd2004_module_front.webp" alt="LCD2004" width="300">](https://raw.githubusercontent.com/JeanMariePrevost/lcd2004-micropython/refs/heads/main/images/lcd2004_module_front.webp)
+
+And need this little add-on board in the back:
+
+[<img src="images/lcd2004_module_backpack.webp" alt="LCD2004" width="300">](https://raw.githubusercontent.com/JeanMariePrevost/lcd2004-micropython/refs/heads/main/images/lcd2004_module_backpack.webp)
+
+
+With it, you use an LCD2004 as a quick logging console:
 
 ```python
 from lcd2004.simple_console import SimpleConsole
@@ -21,9 +32,8 @@ my_lcd_log.log(f"test_value = {test_value}")
 
 ## Features
 
-- Works with common 20×4 LCD modules over I2C using PCF8574 backpacks
-
 - **Simple console wrapper (SimpleConsole)**
+  - Handles the driver internally, offering a simpler interface to work with
   - Line-by-line output
   - Configurable orientation (top-down or bottom-up through the `recent_first` flag) with automatic scroll
   - Optional text wrapping
