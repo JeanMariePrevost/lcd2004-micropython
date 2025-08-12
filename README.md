@@ -13,7 +13,7 @@ And need this little add-on board in the back:
 [<img src="images/lcd2004_module_backpack.webp" alt="LCD2004" width="300">](https://raw.githubusercontent.com/JeanMariePrevost/lcd2004-micropython/refs/heads/main/images/lcd2004_module_backpack.webp)
 
 
-With it, you use an LCD2004 as a quick logging console:
+With this library, you use that LCD2004 as a quick logging console like so:
 
 ```python
 from lcd2004.simple_console import SimpleConsole
@@ -55,14 +55,35 @@ With the `lcd2004/` folder copied to your device’s root or `/lib` directory:
 #### Using SimpleConsole (basic log, text-only)
 
 ```python
+# Import the SimpleConsole class
 from lcd2004.simple_console import SimpleConsole
 
+# Create a SimpleConsole instance, pointing to the relevant GPIO pins
+# (note: use SDA/SCL-capable pins!)
 my_log = SimpleConsole(sda=0, scl=1)
 
+# Use the log() function to print away
 my_log.log("Some text")
 my_log.log("This longer line will be broken up")
 your_variable = 42
 my_log.log(f"Value = {your_variable}")
+```
+
+You can also clear the display of its contents with:
+```python
+my_log.clear() # Clears all text and resets scroll
+```
+
+Or disable line-wrap with:
+
+```python
+my_log = SimpleConsole(sda=0, scl=1, wrap=False)
+```
+
+Or flip the direction of the log entries (i.e. place the most recent entries at the bottom) with:
+
+```python
+my_log = SimpleConsole(sda=0, scl=1, recent_first=False)
 ```
 
 #### Using the driver directly
