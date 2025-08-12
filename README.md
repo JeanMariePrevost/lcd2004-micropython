@@ -134,6 +134,8 @@ lcd.write("C")
 lcd.flush()
 ```
 
+Consult [demo_bare_driver.py](demo_bare_driver.py) and [demo_simple_console.py](demo_simple_console.py) for more in-depth examples.
+
 ---
 
 ## Installation
